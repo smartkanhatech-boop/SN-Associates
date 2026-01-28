@@ -67,7 +67,7 @@ BANK_DETAILS = {
     "name": "SN Associates"
 }
 
-# --- WORK CATALOG (UPDATED: Categories moved to Description Items) ---
+# --- WORK CATALOG ---
 WORK_CATALOG = [
     "Site Visit",
     "Architecture & Design",
@@ -224,7 +224,7 @@ class PDF(FPDF):
 def calculate_page_height(data, schedule_list):
     min_height = 297; required_height = 160 
     for item in data['items']:
-        desc_len = len(item['desc']); lines = math.ceil(desc_len / 45); row_h = max(8, lines * 5)
+        desc_len = len(item['desc']); lines = math.ceil(desc_len / 65); row_h = max(8, lines * 5)
         required_height += row_h
     if schedule_list: required_height += 20 + (len(schedule_list) * 8)
     term_lines = data['meta']['terms'].count('\n') + 3
@@ -274,7 +274,6 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         y_table_start = max(pdf.get_y(), y_info + 25) + 5
         pdf.set_xy(10, y_table_start)
         
-        # CHANGED: 4 Columns (Removed Category), Increased Description Width
         cols = [120, 20, 25, 25] 
         pdf.set_fill_color(240, 240, 240); pdf.set_font('Times', 'B', 10)
         headers = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
@@ -290,19 +289,14 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         for item in data['items']:
             x = pdf.get_x(); y = pdf.get_y()
             desc_txt = sanitize_text(item['desc'])
-            lines = math.ceil(len(desc_txt) / 65) + desc_txt.count('\n') # Adjusted char limit for wider col
+            
+            # New Line calculation for multiline description
+            lines = math.ceil(len(desc_txt) / 65) + desc_txt.count('\n') 
             row_h = max(8, lines * 5)
             
-            # Col 1: Description (Merged Category items go here)
             pdf.set_xy(x, y); pdf.cell(cols[0], row_h, "", 1, 0, 'L')
-            
-            # Col 2: Qty
             pdf.set_xy(x + cols[0], y); pdf.cell(cols[1], row_h, sanitize_text(f"{item['qty']} {item['unit']}"), 1, 0, 'R')
-            
-            # Col 3: Rate
             pdf.set_xy(x + cols[0] + cols[1], y); pdf.cell(cols[2], row_h, f"{item['rate']:.2f}", 1, 0, 'R')
-            
-            # Col 4: Amount
             pdf.set_xy(x + cols[0] + cols[1] + cols[2], y); pdf.cell(cols[3], row_h, f"{item['qty']*item['rate']:.2f}", 1, 0, 'R')
             
             # Print Description Text
@@ -377,13 +371,11 @@ def generate_docx_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
     c_cell.paragraphs[0].add_run(f"{data['client']['phone']}\n{data['client']['address']}")
     
     doc.add_paragraph("\n")
-    # CHANGED: 4 Columns in Word Table
     tbl = doc.add_table(rows=1, cols=4); tbl.style = 'Table Grid'
     hdrs = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
     for i,h in enumerate(hdrs): tbl.rows[0].cells[i].text = h
     for item in data['items']:
         rc = tbl.add_row().cells
-        # Skipped Category Column
         rc[0].text=item['desc']
         rc[1].text=f"{item['qty']} {item['unit']}"; rc[2].text=f"{item['rate']:.2f}"; rc[3].text=f"{item['qty']*item['rate']:.2f}"
     sub, gst, grand = calculate_totals(data['items'], gst_rate_key)
@@ -433,7 +425,6 @@ with tab_b:
         
         st.subheader("Items")
         with st.container(border=True):
-            # CHANGED: Description uses Work Catalog List
             descs = st.multiselect("Description", WORK_CATALOG)
             cust = st.text_input("Custom Desc.")
             c_q, c_r, c_u = st.columns(3)
@@ -441,14 +432,42 @@ with tab_b:
             rate = c_r.number_input("Rate", 0.0, step=100.0)
             unit = c_u.selectbox("Unit", ["Sq.Ft", "Sq.Mt", "L/S", "Nos", "Job", "Sq.In", "Kg/Mt", "Secs"])
             
+            # --- NEW CONTROLS ---
+            c_sep, c_num = st.columns(2)
+            separate_items = c_sep.checkbox("Separate Items (Unmerge)")
+            add_numbering = c_num.checkbox("Add Numbering (1. 2. ...)")
+            
             if st.button("➕ Add"):
                 d_list = descs[:]
                 if cust: d_list.append(cust)
+                
                 if d_list:
-                    # CHANGED: Category is empty string
-                    st.session_state.invoice_data['items'].append({
-                        "category": "", "desc": ", ".join(d_list), "unit": unit, "qty": qty, "rate": rate
-                    })
+                    if separate_items:
+                        # ADD AS SEPARATE ROWS
+                        for d in d_list:
+                            st.session_state.invoice_data['items'].append({
+                                "category": "", 
+                                "desc": d, 
+                                "unit": unit, 
+                                "qty": qty, 
+                                "rate": rate
+                            })
+                    else:
+                        # ADD AS SINGLE MERGED ROW
+                        # Numbering Logic
+                        final_desc = ""
+                        if add_numbering:
+                            final_desc = "\n".join([f"{i+1}. {d}" for i, d in enumerate(d_list)])
+                        else:
+                            final_desc = "\n".join(d_list)
+
+                        st.session_state.invoice_data['items'].append({
+                            "category": "", 
+                            "desc": final_desc, 
+                            "unit": unit, 
+                            "qty": qty, 
+                            "rate": rate
+                        })
                     st.rerun()
         
         if st.session_state.invoice_data['items']:
@@ -491,8 +510,9 @@ with tab_b:
             
         rows_str = ""
         for i in items:
-            # CHANGED: HTML Table has 4 columns (Category Removed)
-            rows_str += f"<tr><td>{i['desc']}</td><td align='right'>{i['qty']} {i['unit']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
+            # HTML also shows newlines as breaks
+            desc_html = i['desc'].replace("\n", "<br>")
+            rows_str += f"<tr><td>{desc_html}</td><td align='right'>{i['qty']} {i['unit']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
         
         schedule_html = ""
         sched_data = [r for r in st.session_state.invoice_data.get('schedule',[]) if r.get("Stage") or r.get("Amount")]
@@ -564,7 +584,6 @@ with tab_h:
         if st.session_state.db['quotations']:
             df_q = pd.DataFrame(st.session_state.db['quotations'])
             
-            # CHANGED: Summary uses Desc instead of Category
             df_q['Items'] = df_q['items'].apply(lambda x: "; ".join([i['desc'] for i in x]))
             df_q.insert(0, 'S.No.', range(1, len(df_q) + 1))
             
