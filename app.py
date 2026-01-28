@@ -67,19 +67,19 @@ BANK_DETAILS = {
     "name": "SN Associates"
 }
 
-# --- WORK CATALOG ---
-WORK_CATALOG = {
-    "Site Visit": ["Initial site visit", "Client discussion", "Site supervision", "Chargeable Site Visit"],
-    "Architecture & Design": ["Conceptual design", "Single line layout plan", "Double line layout plan", "Architectural working floor drawings", "Furniture layout", "Window Details", "Gate Details", "Facade working details"],
-    "Structural Design": ["Construction plan", "Column grid plan", "Footing detail", "Floor beams and slab details", "Column reinforcement", "Tank Details (Septic/Water)", "Compound wall details"],
-    "Electrical & Plumbing": ["Facade Electrical", "Conduit drawing", "Plumbing drawings", "Bathroom fitting details", "Chamber location", "Sewage details"],
-    "2D & 3D": ["2D measurement drawing", "Facade design", "Facade 3D view"],
-    "Elevation Drawing": ["Exterior Drawing", "Working drawing"],
-    "Landscape Drawing": ["Model design", "Working drawing", "Component details"],
-    "Vastu consultancy": ["Remedies", "Factory Vastu", "Residential Vastu", "Commercial Vastu", "Open Land Vastu"],
-    "Supply": ["Hardware materials"],
-    "Walkthrough": ["Residential", "Commercial", "Plotting"]
-}
+# --- WORK CATALOG (UPDATED: Categories moved to Description Items) ---
+WORK_CATALOG = [
+    "Site Visit",
+    "Architecture & Design",
+    "Structural Design",
+    "Electrical & Plumbing",
+    "2D & 3D",
+    "Elevation Drawing",
+    "Landscape Drawing",
+    "Vastu consultancy",
+    "Supply",
+    "Walkthrough"
+]
 
 GST_RATES = {"0%": 0.00, "5%": 0.05, "12%": 0.12, "18%": 0.18}
 
@@ -160,17 +160,12 @@ def calculate_totals(items, gst_rate_key):
 
 # --- ID GENERATOR ---
 def generate_next_id(doc_type, date_obj):
-    """
-    Generates ID in format INV-YYYY-XXX or QUOT-YYYY-XXX.
-    """
     year = str(date_obj.year)
     prefix = "INV" if doc_type == "FINAL BILL" else "QUOT"
     target_format = f"{prefix}-{year}-"
     
     record_list = st.session_state.db['invoices'] if doc_type == "FINAL BILL" else st.session_state.db['quotations']
-    
     max_seq = 0
-    
     for rec in record_list:
         rec_no = rec.get('invoice_no') if doc_type == "FINAL BILL" else rec.get('quotation_no')
         if rec_no and rec_no.startswith(target_format):
@@ -179,7 +174,6 @@ def generate_next_id(doc_type, date_obj):
                 seq = int(seq_part)
                 if seq > max_seq: max_seq = seq
             except: pass
-                
     new_seq = max_seq + 1
     return f"{target_format}{new_seq:03d}"
 
@@ -279,11 +273,13 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         
         y_table_start = max(pdf.get_y(), y_info + 25) + 5
         pdf.set_xy(10, y_table_start)
-        cols = [35, 85, 20, 25, 25]
+        
+        # CHANGED: 4 Columns (Removed Category), Increased Description Width
+        cols = [120, 20, 25, 25] 
         pdf.set_fill_color(240, 240, 240); pdf.set_font('Times', 'B', 10)
-        headers = ["Category", "Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+        headers = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
         for i, h in enumerate(headers):
-            align = 'L' if i < 2 else 'R'
+            align = 'L' if i == 0 else 'R'
             pdf.cell(cols[i], 8, h, 1, 0, align, 1)
         pdf.ln()
         
@@ -294,18 +290,25 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         for item in data['items']:
             x = pdf.get_x(); y = pdf.get_y()
             desc_txt = sanitize_text(item['desc'])
-            lines = math.ceil(len(desc_txt) / 45) + desc_txt.count('\n')
+            lines = math.ceil(len(desc_txt) / 65) + desc_txt.count('\n') # Adjusted char limit for wider col
             row_h = max(8, lines * 5)
             
-            pdf.set_xy(x, y); pdf.cell(cols[0], row_h, sanitize_text(item['category']), 1, 0, 'L')
-            pdf.set_xy(x + cols[0] + cols[1], y); pdf.cell(cols[2], row_h, sanitize_text(f"{item['qty']} {item['unit']}"), 1, 0, 'R')
-            pdf.cell(cols[3], row_h, f"{item['rate']:.2f}", 1, 0, 'R')
-            pdf.cell(cols[4], row_h, f"{item['qty']*item['rate']:.2f}", 1, 0, 'R')
+            # Col 1: Description (Merged Category items go here)
+            pdf.set_xy(x, y); pdf.cell(cols[0], row_h, "", 1, 0, 'L')
             
-            pdf.set_xy(x + cols[0], y); pdf.rect(x, y, sum(cols), row_h)
-            pdf.rect(x, y, cols[0], row_h); pdf.rect(x + cols[0], y, cols[1], row_h)
-            pdf.rect(x + cols[0] + cols[1], y, cols[2], row_h); pdf.rect(x + cols[0] + cols[1] + cols[2], y, cols[3], row_h)
-            pdf.multi_cell(cols[1], 5, desc_txt, 0, 'L')
+            # Col 2: Qty
+            pdf.set_xy(x + cols[0], y); pdf.cell(cols[1], row_h, sanitize_text(f"{item['qty']} {item['unit']}"), 1, 0, 'R')
+            
+            # Col 3: Rate
+            pdf.set_xy(x + cols[0] + cols[1], y); pdf.cell(cols[2], row_h, f"{item['rate']:.2f}", 1, 0, 'R')
+            
+            # Col 4: Amount
+            pdf.set_xy(x + cols[0] + cols[1] + cols[2], y); pdf.cell(cols[3], row_h, f"{item['qty']*item['rate']:.2f}", 1, 0, 'R')
+            
+            # Print Description Text
+            pdf.set_xy(x, y)
+            pdf.multi_cell(cols[0], 5, desc_txt, 0, 'L')
+            
             pdf.set_y(y + row_h)
 
         pdf.ln(2)
@@ -374,13 +377,15 @@ def generate_docx_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
     c_cell.paragraphs[0].add_run(f"{data['client']['phone']}\n{data['client']['address']}")
     
     doc.add_paragraph("\n")
-    tbl = doc.add_table(rows=1, cols=5); tbl.style = 'Table Grid'
-    hdrs = ["Category", "Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+    # CHANGED: 4 Columns in Word Table
+    tbl = doc.add_table(rows=1, cols=4); tbl.style = 'Table Grid'
+    hdrs = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
     for i,h in enumerate(hdrs): tbl.rows[0].cells[i].text = h
     for item in data['items']:
         rc = tbl.add_row().cells
-        rc[0].text=item['category']; rc[1].text=item['desc']
-        rc[2].text=f"{item['qty']} {item['unit']}"; rc[3].text=f"{item['rate']:.2f}"; rc[4].text=f"{item['qty']*item['rate']:.2f}"
+        # Skipped Category Column
+        rc[0].text=item['desc']
+        rc[1].text=f"{item['qty']} {item['unit']}"; rc[2].text=f"{item['rate']:.2f}"; rc[3].text=f"{item['qty']*item['rate']:.2f}"
     sub, gst, grand = calculate_totals(data['items'], gst_rate_key)
     if hide_gst: gst=0; grand=sub
     p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -428,8 +433,8 @@ with tab_b:
         
         st.subheader("Items")
         with st.container(border=True):
-            cat = st.selectbox("Category", list(WORK_CATALOG.keys()))
-            descs = st.multiselect("Description", WORK_CATALOG[cat])
+            # CHANGED: Description uses Work Catalog List
+            descs = st.multiselect("Description", WORK_CATALOG)
             cust = st.text_input("Custom Desc.")
             c_q, c_r, c_u = st.columns(3)
             qty = c_q.number_input("Qty", 1.0)
@@ -440,8 +445,9 @@ with tab_b:
                 d_list = descs[:]
                 if cust: d_list.append(cust)
                 if d_list:
+                    # CHANGED: Category is empty string
                     st.session_state.invoice_data['items'].append({
-                        "category": cat, "desc": ", ".join(d_list), "unit": unit, "qty": qty, "rate": rate
+                        "category": "", "desc": ", ".join(d_list), "unit": unit, "qty": qty, "rate": rate
                     })
                     st.rerun()
         
@@ -471,13 +477,12 @@ with tab_b:
     with cp:
         st.subheader("Live Preview")
         
-        # GENERATE ID FOR PREVIEW
         preview_id = generate_next_id(dtype, ddate)
         
         items = st.session_state.invoice_data['items']
         sub, gst, grand = calculate_totals(items, grate)
         if hgst: gst=0; grand=sub; gst_html=""
-        else: gst_html=f"<tr><td colspan='4' align='right'>GST ({grate}):</td><td align='right'>Rs. {gst:,.2f}</td></tr>"
+        else: gst_html=f"<tr><td colspan='3' align='right'>GST ({grate}):</td><td align='right'>Rs. {gst:,.2f}</td></tr>"
         
         logo_html = ""
         if os.path.exists(LOGO_FULL_PATH):
@@ -486,7 +491,8 @@ with tab_b:
             
         rows_str = ""
         for i in items:
-            rows_str += f"<tr><td>{i['category']}</td><td>{i['desc']}</td><td align='right'>{i['qty']} {i['unit']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
+            # CHANGED: HTML Table has 4 columns (Category Removed)
+            rows_str += f"<tr><td>{i['desc']}</td><td align='right'>{i['qty']} {i['unit']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
         
         schedule_html = ""
         sched_data = [r for r in st.session_state.invoice_data.get('schedule',[]) if r.get("Stage") or r.get("Amount")]
@@ -501,7 +507,7 @@ with tab_b:
 <table style="width:100%; border:none;"><tr><td style="width:50%; vertical-align:top;">{logo_html}</td><td style="width:50%; text-align:right; vertical-align:top;"><h2 style="color:#000080; margin:0;">{COMPANY_NAME}</h2><div style="font-size:12px; color:black;">{COMPANY_ADDRESS}<br>Ph: {COMPANY_PHONE}</div></td></tr></table>
 <hr style="border: 1px solid #333; margin: 10px 0;"><h3 style="text-align:center;">{display_type_html}</h3>
 <table style="width:100%; border-collapse:collapse; margin-bottom:20px;"><tr><td style="width:48%; border:1px solid #ccc; padding:10px; vertical-align:top;"><strong>DETAILS:</strong><br>Type: {display_type_html}<br>Date: {ddate}<br>{lbl_preview}: {preview_id}</td><td style="width:4%; border:none;"></td><td style="width:48%; border:1px solid #ccc; padding:10px; vertical-align:top;"><strong>TO CLIENT:</strong><br><strong style="font-size:16px;">{c_name}</strong><br>{c_mob}<br>{c_addr}</td></tr></table>
-<table style="width:100%; border-collapse:collapse; border:1px solid #ccc; font-size:13px;" border="1"><tr style="background:#eee;"><th>Cat</th><th>Desc</th><th>Qty</th><th>Rate</th><th>Amt</th></tr>{rows_str}<tr><td colspan='4' align='right'>Subtotal:</td><td align='right'>Rs. {sub:,.2f}</td></tr>{gst_html}<tr><td colspan='4' align='right'><b>Total:</b></td><td align='right'><b>Rs. {grand:,.2f}</b></td></tr></table>
+<table style="width:100%; border-collapse:collapse; border:1px solid #ccc; font-size:13px;" border="1"><tr style="background:#eee;"><th>Desc</th><th>Qty</th><th>Rate</th><th>Amt</th></tr>{rows_str}<tr><td colspan='3' align='right'>Subtotal:</td><td align='right'>Rs. {sub:,.2f}</td></tr>{gst_html}<tr><td colspan='3' align='right'><b>Total:</b></td><td align='right'><b>Rs. {grand:,.2f}</b></td></tr></table>
 <p style="text-align:right; font-style:italic;">{number_to_words_safe(grand)}</p>
 {schedule_html}
 <div style="border:1px dashed #ccc; padding:10px; margin-top:10px;"><strong>TERMS:</strong><pre style="white-space:pre-wrap; font-family:inherit; margin:0;">{term_txt}</pre></div>
@@ -543,10 +549,7 @@ with tab_b:
             
         fdata = {"meta": {"type": dtype, "date": str(ddate), "terms": term_txt}, "client": {"name": c_name, "phone": c_mob, "address": c_addr}, "items": items}
         
-        # GENERATE PDF WITH PREVIEW ID
         pdf_bytes = generate_pdf_bytes(fdata, grate, hgst, sched_data, preview_id)
-        
-        # FILENAME LOGIC
         f_suffix = "Bill" if dtype == "FINAL BILL" else "Quotation"
         
         if pdf_bytes:
@@ -561,7 +564,8 @@ with tab_h:
         if st.session_state.db['quotations']:
             df_q = pd.DataFrame(st.session_state.db['quotations'])
             
-            df_q['Items'] = df_q['items'].apply(lambda x: "; ".join([f"{i['category']} - {i['desc']}" for i in x]))
+            # CHANGED: Summary uses Desc instead of Category
+            df_q['Items'] = df_q['items'].apply(lambda x: "; ".join([i['desc'] for i in x]))
             df_q.insert(0, 'S.No.', range(1, len(df_q) + 1))
             
             st.dataframe(df_q[['S.No.', 'quotation_no', 'date', 'client_name', 'amount', 'Items']], use_container_width=True, hide_index=True)
@@ -751,8 +755,9 @@ with tab_t:
         if not data_list: return pd.DataFrame()
         df = pd.DataFrame(data_list)
         df.insert(0, 'S.No.', range(1, len(df) + 1))
+        # CHANGED: Items use desc, not category
         if 'items' in df.columns:
-            df['Items'] = df['items'].apply(lambda x: "; ".join([f"{i['category']} - {i['desc']}" for i in x]) if isinstance(x, list) else "")
+            df['Items'] = df['items'].apply(lambda x: "; ".join([i['desc'] for i in x]) if isinstance(x, list) else "")
         if is_invoice and 'invoice_no' not in df.columns: df['invoice_no'] = df.get('id', '')
         
         if is_invoice:
