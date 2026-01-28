@@ -177,6 +177,19 @@ def generate_next_id(doc_type, date_obj):
     new_seq = max_seq + 1
     return f"{target_format}{new_seq:03d}"
 
+def generate_csv_bytes(items):
+    """Generate CSV bytes for a list of items"""
+    if not items:
+        return b""
+    df = pd.DataFrame(items)
+    # Reorder/Clean columns
+    cols_to_keep = ['desc', 'unit', 'qty', 'rate']
+    final_cols = [c for c in cols_to_keep if c in df.columns]
+    df = df[final_cols]
+    df.columns = ['Description', 'Unit', 'Qty', 'Rate']
+    df['Amount'] = df['Qty'] * df['Rate']
+    return df.to_csv(index=False).encode('utf-8')
+
 # --- RECEIPT PDF ---
 class ReceiptPDF(FPDF):
     def header(self): pass
@@ -224,7 +237,7 @@ class PDF(FPDF):
 def calculate_page_height(data, schedule_list):
     min_height = 297; required_height = 160 
     for item in data['items']:
-        desc_len = len(item['desc']); lines = math.ceil(desc_len / 65); row_h = max(8, lines * 5)
+        desc_len = len(item['desc']); lines = math.ceil(desc_len / 60); row_h = max(8, lines * 5)
         required_height += row_h
     if schedule_list: required_height += 20 + (len(schedule_list) * 8)
     term_lines = data['meta']['terms'].count('\n') + 3
@@ -274,9 +287,10 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         y_table_start = max(pdf.get_y(), y_info + 25) + 5
         pdf.set_xy(10, y_table_start)
         
-        cols = [120, 20, 25, 25] 
+        # 5 COLUMNS: Desc, Unit, Qty, Rate, Amount
+        cols = [105, 15, 15, 25, 30] 
         pdf.set_fill_color(240, 240, 240); pdf.set_font('Times', 'B', 10)
-        headers = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+        headers = ["Description", "Unit", "Qty", "Rate", "Amount"]
         for i, h in enumerate(headers):
             align = 'L' if i == 0 else 'R'
             pdf.cell(cols[i], 8, h, 1, 0, align, 1)
@@ -287,23 +301,54 @@ def generate_pdf_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
         if hide_gst: gst=0; grand=sub
 
         for item in data['items']:
-            x = pdf.get_x(); y = pdf.get_y()
-            desc_txt = sanitize_text(item['desc'])
+            start_x = pdf.get_x()
+            start_y = pdf.get_y()
             
-            # New Line calculation for multiline description
-            lines = math.ceil(len(desc_txt) / 65) + desc_txt.count('\n') 
-            row_h = max(8, lines * 5)
+            # Process Description
+            desc_lines = item['desc'].split('\n')
             
-            pdf.set_xy(x, y); pdf.cell(cols[0], row_h, "", 1, 0, 'L')
-            pdf.set_xy(x + cols[0], y); pdf.cell(cols[1], row_h, sanitize_text(f"{item['qty']} {item['unit']}"), 1, 0, 'R')
-            pdf.set_xy(x + cols[0] + cols[1], y); pdf.cell(cols[2], row_h, f"{item['rate']:.2f}", 1, 0, 'R')
-            pdf.set_xy(x + cols[0] + cols[1] + cols[2], y); pdf.cell(cols[3], row_h, f"{item['qty']*item['rate']:.2f}", 1, 0, 'R')
+            line_heights = []
+            for line in desc_lines:
+                wrap_lines = math.ceil(len(line) / 55)
+                line_heights.append(max(5, wrap_lines * 5))
             
-            # Print Description Text
-            pdf.set_xy(x, y)
-            pdf.multi_cell(cols[0], 5, desc_txt, 0, 'L')
+            total_h = sum(line_heights)
+            total_h = max(8, total_h)
             
-            pdf.set_y(y + row_h)
+            if start_y + total_h > page_h - 20:
+                pdf.add_page()
+                start_y = pdf.get_y()
+                start_x = pdf.get_x()
+            
+            current_y = start_y
+            pdf.set_xy(start_x, current_y)
+            pdf.rect(start_x, start_y, cols[0], total_h)
+            
+            for idx, line in enumerate(desc_lines):
+                h = line_heights[idx]
+                pdf.set_xy(start_x, current_y)
+                pdf.multi_cell(cols[0], 5, sanitize_text(line), 0, 'L')
+                
+                if idx < len(desc_lines) - 1:
+                    line_y = current_y + h
+                    pdf.line(start_x, line_y, start_x + cols[0], line_y)
+                    current_y += h
+                else:
+                    current_y += h
+
+            pdf.set_xy(start_x + cols[0], start_y)
+            pdf.cell(cols[1], total_h, sanitize_text(item['unit']), 1, 0, 'C')
+            
+            pdf.set_xy(start_x + cols[0] + cols[1], start_y)
+            pdf.cell(cols[2], total_h, str(item['qty']), 1, 0, 'C')
+            
+            pdf.set_xy(start_x + cols[0] + cols[1] + cols[2], start_y)
+            pdf.cell(cols[3], total_h, f"{item['rate']:.2f}", 1, 0, 'R')
+            
+            pdf.set_xy(start_x + cols[0] + cols[1] + cols[2] + cols[3], start_y)
+            pdf.cell(cols[4], total_h, f"{item['qty']*item['rate']:.2f}", 1, 0, 'R')
+            
+            pdf.set_y(start_y + total_h)
 
         pdf.ln(2)
         def print_total(label, val, bold=False):
@@ -371,13 +416,17 @@ def generate_docx_bytes(data, gst_rate_key, hide_gst, schedule_list, doc_no):
     c_cell.paragraphs[0].add_run(f"{data['client']['phone']}\n{data['client']['address']}")
     
     doc.add_paragraph("\n")
-    tbl = doc.add_table(rows=1, cols=4); tbl.style = 'Table Grid'
-    hdrs = ["Description", "Qty", "Rate (Rs.)", "Amount (Rs.)"]
+    # 5 COLUMNS in Word
+    tbl = doc.add_table(rows=1, cols=5); tbl.style = 'Table Grid'
+    hdrs = ["Description", "Unit", "Qty", "Rate", "Amount"]
     for i,h in enumerate(hdrs): tbl.rows[0].cells[i].text = h
     for item in data['items']:
         rc = tbl.add_row().cells
         rc[0].text=item['desc']
-        rc[1].text=f"{item['qty']} {item['unit']}"; rc[2].text=f"{item['rate']:.2f}"; rc[3].text=f"{item['qty']*item['rate']:.2f}"
+        rc[1].text=item['unit']
+        rc[2].text=str(item['qty'])
+        rc[3].text=f"{item['rate']:.2f}"
+        rc[4].text=f"{item['qty']*item['rate']:.2f}"
     sub, gst, grand = calculate_totals(data['items'], gst_rate_key)
     if hide_gst: gst=0; grand=sub
     p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -432,7 +481,6 @@ with tab_b:
             rate = c_r.number_input("Rate", 0.0, step=100.0)
             unit = c_u.selectbox("Unit", ["Sq.Ft", "Sq.Mt", "L/S", "Nos", "Job", "Sq.In", "Kg/Mt", "Secs"])
             
-            # --- NEW CONTROLS ---
             c_sep, c_num = st.columns(2)
             separate_items = c_sep.checkbox("Separate Items (Unmerge)")
             add_numbering = c_num.checkbox("Add Numbering (1. 2. ...)")
@@ -443,18 +491,17 @@ with tab_b:
                 
                 if d_list:
                     if separate_items:
-                        # ADD AS SEPARATE ROWS
-                        for d in d_list:
+                        for i, d in enumerate(d_list):
+                            # ADD NUMBERING IF CHECKED
+                            final_d = f"{i+1}. {d}" if add_numbering else d
                             st.session_state.invoice_data['items'].append({
                                 "category": "", 
-                                "desc": d, 
+                                "desc": final_d, 
                                 "unit": unit, 
                                 "qty": qty, 
                                 "rate": rate
                             })
                     else:
-                        # ADD AS SINGLE MERGED ROW
-                        # Numbering Logic
                         final_desc = ""
                         if add_numbering:
                             final_desc = "\n".join([f"{i+1}. {d}" for i, d in enumerate(d_list)])
@@ -501,7 +548,7 @@ with tab_b:
         items = st.session_state.invoice_data['items']
         sub, gst, grand = calculate_totals(items, grate)
         if hgst: gst=0; grand=sub; gst_html=""
-        else: gst_html=f"<tr><td colspan='3' align='right'>GST ({grate}):</td><td align='right'>Rs. {gst:,.2f}</td></tr>"
+        else: gst_html=f"<tr><td colspan='4' align='right'>GST ({grate}):</td><td align='right'>Rs. {gst:,.2f}</td></tr>"
         
         logo_html = ""
         if os.path.exists(LOGO_FULL_PATH):
@@ -510,9 +557,9 @@ with tab_b:
             
         rows_str = ""
         for i in items:
-            # HTML also shows newlines as breaks
+            # 5 Columns in HTML
             desc_html = i['desc'].replace("\n", "<br>")
-            rows_str += f"<tr><td>{desc_html}</td><td align='right'>{i['qty']} {i['unit']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
+            rows_str += f"<tr><td>{desc_html}</td><td>{i['unit']}</td><td align='right'>{i['qty']}</td><td align='right'>{i['rate']}</td><td align='right'>{i['qty']*i['rate']:.2f}</td></tr>"
         
         schedule_html = ""
         sched_data = [r for r in st.session_state.invoice_data.get('schedule',[]) if r.get("Stage") or r.get("Amount")]
@@ -527,7 +574,7 @@ with tab_b:
 <table style="width:100%; border:none;"><tr><td style="width:50%; vertical-align:top;">{logo_html}</td><td style="width:50%; text-align:right; vertical-align:top;"><h2 style="color:#000080; margin:0;">{COMPANY_NAME}</h2><div style="font-size:12px; color:black;">{COMPANY_ADDRESS}<br>Ph: {COMPANY_PHONE}</div></td></tr></table>
 <hr style="border: 1px solid #333; margin: 10px 0;"><h3 style="text-align:center;">{display_type_html}</h3>
 <table style="width:100%; border-collapse:collapse; margin-bottom:20px;"><tr><td style="width:48%; border:1px solid #ccc; padding:10px; vertical-align:top;"><strong>DETAILS:</strong><br>Type: {display_type_html}<br>Date: {ddate}<br>{lbl_preview}: {preview_id}</td><td style="width:4%; border:none;"></td><td style="width:48%; border:1px solid #ccc; padding:10px; vertical-align:top;"><strong>TO CLIENT:</strong><br><strong style="font-size:16px;">{c_name}</strong><br>{c_mob}<br>{c_addr}</td></tr></table>
-<table style="width:100%; border-collapse:collapse; border:1px solid #ccc; font-size:13px;" border="1"><tr style="background:#eee;"><th>Desc</th><th>Qty</th><th>Rate</th><th>Amt</th></tr>{rows_str}<tr><td colspan='3' align='right'>Subtotal:</td><td align='right'>Rs. {sub:,.2f}</td></tr>{gst_html}<tr><td colspan='3' align='right'><b>Total:</b></td><td align='right'><b>Rs. {grand:,.2f}</b></td></tr></table>
+<table style="width:100%; border-collapse:collapse; border:1px solid #ccc; font-size:13px;" border="1"><tr style="background:#eee;"><th>Desc</th><th>Unit</th><th>Qty</th><th>Rate</th><th>Amt</th></tr>{rows_str}<tr><td colspan='4' align='right'>Subtotal:</td><td align='right'>Rs. {sub:,.2f}</td></tr>{gst_html}<tr><td colspan='4' align='right'><b>Total:</b></td><td align='right'><b>Rs. {grand:,.2f}</b></td></tr></table>
 <p style="text-align:right; font-style:italic;">{number_to_words_safe(grand)}</p>
 {schedule_html}
 <div style="border:1px dashed #ccc; padding:10px; margin-top:10px;"><strong>TERMS:</strong><pre style="white-space:pre-wrap; font-family:inherit; margin:0;">{term_txt}</pre></div>
@@ -634,10 +681,14 @@ with tab_h:
             doc_id = selected_quote.get('quotation_no', 'N/A')
             pdf_bytes_h = generate_pdf_bytes(fdata_h, selected_quote.get('gst_rate', '18%'), selected_quote.get('hide_gst', False), selected_quote.get('schedule', []), doc_id)
             
+            c_d1, c_d2, c_d3 = st.columns(3)
             if pdf_bytes_h:
-                st.download_button("Download PDF", pdf_bytes_h, f"{selected_quote['client_name']} Quotation.pdf", "application/pdf")
+                c_d1.download_button("Download PDF", pdf_bytes_h, f"{selected_quote['client_name']} Quotation.pdf", "application/pdf")
             else:
-                st.error("PDF Generation Failed")
+                c_d1.error("PDF Fail")
+            
+            c_d2.download_button("Download Word", generate_docx_bytes(fdata_h, selected_quote.get('gst_rate', '18%'), selected_quote.get('hide_gst', False), selected_quote.get('schedule', []), doc_id), f"{selected_quote['client_name']} Quotation.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            c_d3.download_button("Download CSV", generate_csv_bytes(selected_quote['items']), f"{selected_quote['client_name']} Items.csv", "text/csv")
 
         else: st.info("No active quotations.")
 
@@ -679,10 +730,15 @@ with tab_h:
             doc_id = db_record.get('invoice_no', 'N/A')
             pdf_bytes_b = generate_pdf_bytes(fdata_b, db_record.get('gst_rate','18%'), db_record.get('hide_gst', False), db_record.get('schedule',[]), doc_id)
             
+            c_d1, c_d2, c_d3 = st.columns(3)
+            
             if pdf_bytes_b:
-                c1.download_button("📄 Download Bill PDF", pdf_bytes_b, f"{db_record['client_name']} Bill.pdf", "application/pdf", type="primary")
+                c_d1.download_button("📄 Download PDF", pdf_bytes_b, f"{db_record['client_name']} Bill.pdf", "application/pdf", type="primary")
             else:
-                c1.error("PDF Generation Failed")
+                c_d1.error("PDF Fail")
+                
+            c_d2.download_button("📝 Download Word", generate_docx_bytes(fdata_b, db_record.get('gst_rate','18%'), db_record.get('hide_gst', False), db_record.get('schedule',[]), doc_id), f"{db_record['client_name']} Bill.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            c_d3.download_button("📊 Download CSV", generate_csv_bytes(db_record['items']), f"{db_record['client_name']} Items.csv", "text/csv")
             
             if db_record['status'] == "Pending":
                 if c2.button("✅ Mark as Complete (Force)"):
